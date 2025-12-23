@@ -1,0 +1,12 @@
+streamlit
+pandas
+numpy
+akshare
+baostock
+tushare
+openai
+plotly
+requests
+tenacity
+plyer
+apscheduler
