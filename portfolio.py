@@ -77,11 +77,11 @@ def upsert_holding(symbol, name, total_shares, avail_shares, cost, buy_date_str)
     # 计算锁定股数 (T0 买入股数)
     locked_qty = int(total_shares) - int(avail_shares)
     
-    if total_shares <= 0:
-        # 清仓/删除操作
-        data['holdings'] = [h for h in holdings if h['symbol'] != symbol]
-        save_portfolio(data)
-        return True
+    # if total_shares <= 0:
+    #     # 清仓/删除操作
+    #     data['holdings'] = [h for h in holdings if h['symbol'] != symbol]
+    #     save_portfolio(data)
+    #     return True
         
     # 查找是否存在
     existing = next((h for h in holdings if h['symbol'] == symbol), None)

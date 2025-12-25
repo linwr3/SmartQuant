@@ -61,18 +61,6 @@ if not os.path.exists(data_manager.DATA_DIR):
 page = st.sidebar.radio("功能导航", ["📊 市场全景", "🤖 智能决策 & 机会", "📂 数据仓库 & 选股", "💰 资产管理 (T+1)", "⚙️ 系统设置"])
 
 # --- 辅助函数 ---
-def save_ai_config(strategy, period_minutes, symbols):
-    DATA_DIR = "data"
-    if not os.path.exists(DATA_DIR):
-        os.makedirs(DATA_DIR)
-    CONFIG_FILE = os.path.join(DATA_DIR, "ai_config.json")
-    config = {
-        "strategy": strategy, 
-        "period_minutes": period_minutes, 
-        "symbols": symbols
-    }
-    with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-        json.dump(config, f, indent=4, ensure_ascii=False)
 
 def is_scheduler_running():
     if not os.path.exists(PID_FILE): return False
@@ -193,15 +181,24 @@ elif page == "🤖 智能决策 & 机会":
     st.subheader("决策设置")
     c_set1, c_set2 = st.columns(2)
     
+    config = data_manager.load_ai_config()
+
     strategy_options = {
         "High-Risk/High-Reward": "高风险/高收益 (激进策略)",
         "Low-Risk/Low-Yield": "低风险/低收益 (稳健策略)",
         "Dynamic-Market-Adjusted": "动态市场调整 (综合策略)"
     }
-    
-    selected_strategy = c_set1.selectbox("选择决策策略", options=list(strategy_options.keys()), format_func=lambda x: strategy_options[x])
+    strategy_options_keys = list(strategy_options.keys())
+    selected_strategy = c_set1.selectbox("选择决策策略", 
+                                         options=strategy_options_keys, 
+                                         format_func=lambda x: strategy_options[x], 
+                                         index=strategy_options_keys.index(config.get('strategy')))
     period_options = {p: f"{p} 分钟" for p in range(10, 121, 10)}
-    selected_period = c_set2.selectbox("检测周期", options=list(period_options.keys()), format_func=lambda p: f"{p} 分钟")
+    period_options_key = list(period_options.keys())
+    selected_period = c_set2.selectbox("检测周期", 
+                                       options=period_options_key, 
+                                       format_func=lambda p: period_options[p], 
+                                       index=period_options_key.index(config.get('period_minutes')))
 
     st.markdown("---")
     st.subheader("任务控制")
@@ -213,12 +210,11 @@ elif page == "🤖 智能决策 & 机会":
         st.error("🛑 后台调度任务未运行。")
     
     current_holdings = portfolio.load_portfolio().get('holdings', [])
-    symbols_to_monitor = [h['symbol'] for h in current_holdings if h['total_shares'] > 0]
     
     col_btn1, col_btn2, col_btn3 = st.columns(3)
     
     if col_btn1.button("🚀 启动 AI 调度", disabled=running, type="primary"):
-        save_ai_config(selected_strategy, selected_period, symbols_to_monitor)
+        data_manager.save_ai_config(selected_strategy, selected_period)
         start_ai_scheduler()
     
     if col_btn2.button("🔴 停止 AI 调度", disabled=not running):
@@ -227,7 +223,7 @@ elif page == "🤖 智能决策 & 机会":
     # 调试按钮
     if col_btn3.button("🐞 调试 Prompt (不消耗Token)", type="secondary"):
         st.info("正在生成 Prompt 预览...")
-        save_ai_config(selected_strategy, selected_period, symbols_to_monitor)
+        data_manager.save_ai_config(selected_strategy, selected_period)
         portfolio_summary, mock_stocks = ai_scheduler.gen_ai_executer_info()
         if not mock_stocks:
             pass
@@ -460,6 +456,7 @@ elif page == "💰 资产管理 (T+1)":
                 "latest_buy_date": "最近买入日"
             },
             width="stretch",
+            height="auto",
             on_select="rerun", 
             selection_mode="single-row"
         )
@@ -509,5 +506,6 @@ elif page == "💰 资产管理 (T+1)":
             final_symbol = st.session_state.get('edit_symbol', '')
             if final_symbol:
                 portfolio.delete_holding(final_symbol)
+                st.session_state['clear_form_after_submit'] = True
                 st.warning(f"{final_symbol} 已删除")
                 st.rerun()

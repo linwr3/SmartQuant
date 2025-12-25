@@ -38,6 +38,23 @@ MAX_TRY_TIMES = 60
 if not os.path.exists(HISTORY_DIR):
     os.makedirs(HISTORY_DIR)
 
+DATA_DIR = "data"
+CONFIG_FILE = f"{DATA_DIR}/ai_config.json"
+
+def load_ai_config():
+    if not os.path.exists(CONFIG_FILE): return {"strategy": "Dynamic-Market-Adjusted", "period_minutes": 10}
+    with open(CONFIG_FILE, 'r', encoding='utf-8') as f: return json.load(f)
+
+def save_ai_config(strategy, period_minutes):
+    if not os.path.exists(DATA_DIR):
+        os.makedirs(DATA_DIR)
+    config = {
+        "strategy": strategy, 
+        "period_minutes": period_minutes, 
+    }
+    with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+        json.dump(config, f, indent=4, ensure_ascii=False)
+
 def load_settings():
     """加载配置"""
     if not os.path.exists(SETTINGS_FILE):

@@ -2,6 +2,7 @@ import json
 import os
 import sys
 import time
+import data_manager
 from datetime import datetime
 from apscheduler.schedulers.blocking import BlockingScheduler
 from plyer import notification 
@@ -14,30 +15,24 @@ except ImportError as e:
     print(f"模块导入错误: {e}")
     sys.exit(1)
 
-CONFIG_FILE = "data/ai_config.json"
-LOG_DIR = "logs"
-if not os.path.exists(LOG_DIR): os.makedirs(LOG_DIR)
-
-def load_ai_config():
-    if not os.path.exists(CONFIG_FILE): return {"strategy": "Dynamic-Market-Adjusted"}
-    with open(CONFIG_FILE, 'r', encoding='utf-8') as f: return json.load(f)
-
 def send_notification(title, message):
     try: notification.notify(title=title, message=message, app_name='SmartQuant Pro AI')
     except: pass
 
+LOG_DIR = "logs"
 def write_signal_log(message):
     today = datetime.now().strftime("%Y-%m-%d")
     with open(os.path.join(LOG_DIR, f"ai_signals_{today}.txt"), 'a', encoding='utf-8') as f:
         f.write(f"{message}\n")
 
 def gen_ai_executer_info():
-    config = load_ai_config()
+    config = data_manager.load_ai_config()
     strategy = config.get('strategy', 'Dynamic-Market-Adjusted')
     
     try:
         data = portfolio.load_portfolio()
-        holdings = [h for h in data.get('holdings', []) if h['total_shares'] > 0]
+        # holdings = [h for h in data.get('holdings', []) if h['total_shares'] > 0]
+        holdings = data.get('holdings', [])
         cash = data.get('cash', 0.0)
     except: return
 
@@ -51,7 +46,7 @@ def gen_ai_executer_info():
         symbol = h['symbol']
         rt = data_manager.get_realtime_quote(symbol)
         price = rt.get('price', 0.0)
-        if price <= 0.01: continue
+        # if price <= 0.01: continue
         
         val = price * h['total_shares']
         total_val += val
@@ -95,7 +90,7 @@ def execute_ai_decision():
         res = ai_engine.get_batch_decision(summary, stocks_data_list)
         
         output_info = ""
-        for d in res.get("holdings_analysis", []):
+        for d in res.get("stocks_analysis", []):
             act = d.get("action")
             if act in ["BUY", "SELL", "REDUCE", "CLEAR"]:
                 msg = f"【{act}】{d.get('name', '')}({d.get('symbol')}) 价格区间：{d.get('price_range','')}；操作股数：{d.get('quantity',0)}\n{d.get('reason')}"
@@ -115,7 +110,7 @@ def execute_ai_decision():
         print(f"执行失败: {e}")
 
 def start_scheduler():
-    config = load_ai_config()
+    config = data_manager.load_ai_config()
     period = config.get('period_minutes', 30)
     scheduler = BlockingScheduler()
     scheduler.add_job(execute_ai_decision, 'interval', minutes=period, start_date=datetime.now())

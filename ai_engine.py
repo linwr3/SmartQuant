@@ -39,18 +39,31 @@ def generate_batch_prompt(portfolio_summary, stocks_data):
         max_pos_limit = 30
 
     enriched_stocks = []
+    followed_stocks = []
     for s in stocks_data:
-        cost = s.get('cost_price', 0.0)
-        curr = s.get('current_price', 0.0)
-        pnl_pct = 0.0
-        if cost > 0:
-            pnl_pct = (curr - cost) / cost * 100
-        
-        # 注入计算好的字段
-        s['pnl_ratio'] = f"{pnl_pct:.2f}%" 
-        enriched_stocks.append(s)
+        if s.get('shares', 0) == 0:
+            followed_stocks.append({
+                'symbol': s.get('symbol'),
+                'name': s.get('name'),
+                'current_price': s.get('current_price', 0.0),
+                'indicators': s.get('indicators'),
+            })
+        else:
+            cost = s.get('cost_price', 0.0)
+            curr = s.get('current_price', 0.0)
+            pnl_pct = 0.0
+            if cost > 0:
+                pnl_pct = (curr - cost) / cost * 100
+            
+            # 注入计算好的字段
+            s['pnl_ratio'] = f"{pnl_pct:.2f}%" 
+            enriched_stocks.append(s)
 
     holdings_json = json.dumps(enriched_stocks, ensure_ascii=False, indent=2)
+    if len(followed_stocks) > 0:
+        followed_stocks_json = json.dumps(followed_stocks, ensure_ascii=False, indent=2)
+    else:
+        followed_stocks_json = "[]"
     
     user_prompt = f"""
     请根据以下账户状态和持仓数据，进行全面的投资决策分析。
@@ -64,33 +77,49 @@ def generate_batch_prompt(portfolio_summary, stocks_data):
     【当前持仓数据】
     {holdings_json}
 
+    【已跟踪但未持仓的股票】
+    {followed_stocks_json}
+
     【任务要求】
-    1. **持仓诊断(核心)**: 遍历上述每一只股票。
-       - 计算其当前仓位占比。必须关注 `pnl_ratio` (盈亏率) 、 `cost_price` (成本价)、`avail_shares` (当前可交易股数)、`shares`(持有总股数)。
+    1. **持仓诊断(核心)**: 遍历上述【当前持仓数据】每一只股票。
+       - 计算其当前**仓位占比**。必须关注 `pnl_ratio` (盈亏率) 、 `cost_price` (成本价)、`avail_shares` (**当前可交易股数**)、`shares`(持有总股数)。
        - 结合 JSON 中的 `indicators` (MACD, RSI, MA5) 判断趋势。MACD_Cross=1 为金叉(买入/持有信号)，-1 为死叉(卖出/减仓信号)。
+       - 结合现在股票实时的 `MACDFS` 、 `分时量` 指标判断短期趋势。
        - 如果当前仓位超过 {max_pos_limit}%，必须建议减仓 (REDUCE)。
        - 如果技术面死叉或严重破位或顶背离，建议卖出 (SELL) 或清仓 (CLEAR)。
        - 严格对照上述策略中的【止损线】，如果亏损幅度触及止损线，除非有极强的反转信号(如底背离金叉)，否则必须建议 SELL/CLEAR。
        - 如果趋势良好且仓位不足，可建议加仓 (BUY)。
-       - 对于 BUY/SELL 操作，请给出建议的 **价格区间 (price_range)** (例如: "20.50-20.80")。
+       - 如果消息面有利好，建议买入 (BUY)。如果消息面有利空，建议卖出防守(SELL)。消息面来源包括但不限于公司财报、财经新闻、财经论坛、财经博客、财经网站、财经APP、小红书评价等。
+       - 对于 BUY/SELL 操作，请给出建议的 **价格区间 (price_range)** (例如: "20.50-20.80")和**目前股价**。
+       - 分析结果输出到stocks_analysis。
+
+    2. **关注股票诊断(核心)**：遍历上述【已跟踪但未持仓的股票】每一只股票。
+       - 必须关注 `current_price` (目前股价) 。
+       - 结合 JSON 中的 `indicators` (MACD, RSI, MA5) 判断趋势。MACD_Cross=1 为金叉(买入/持有信号)，-1 为死叉(卖出/减仓信号)。
+       - 如果技术面金叉或底背离，建议买入 (BUY)。
+       - 如果消息面有利好，建议买入 (BUY)。消息面来源包括但不限于公司财报、财经新闻、财经论坛、财经博客、财经网站、财经APP、小红书评价等。
+       - 对于 BUY 操作，请给出建议的 **价格区间 (price_range)** (例如: "20.50-20.80")和**目前股价**。
+       - 分析结果输出到stocks_analysis。
     
-    2. **机会发现 (Market Opportunities)**: 
+    3. **机会发现 (Market Opportunities)**: 
        - 基于你对中国股市板块轮动和近期（截止你训练数据知识库）的热门方向（如科技、新能源、中特估等），结合当前策略。
        - 如果上述持仓中有表现不佳的股票，请建议是否应该更换。
        - 必须关注账户`可用现金`是否足够买入新股，买入后仓位占比是否合理。
        - 推荐 3-5 个你认为值得关注的比目前持仓更有盈利机会的潜力股票或具体概念（请提供具体的板块名称、具体代码和选股逻辑）。
        - *注意*: 如果没有足够信心，可以返回空列表。
+       - 分析结果输出到market_opportunities。
 
     【输出格式】
     必须是合法的 JSON 对象，不包含 Markdown 格式：
     {{
-        "holdings_analysis": [
+        "stocks_analysis": [
             {{
                 "symbol": "股票代码",
                 "name": "股票名称",
                 "action": "BUY/SELL/HOLD/REDUCE/CLEAR",
                 "quantity": 建议交易股数 (100的整数倍),
                 "price_range": "建议买卖价格区间 (字符串)",
+                "current_price": 当前股价(小数点后保留2位的float),
                 "reason": "简短理由 (包含技术面和仓位逻辑)"
             }}
         ],
@@ -144,11 +173,11 @@ def get_batch_decision(portfolio_summary, stocks_data):
         json_str = json_str.replace("'", '"')
         
         result = json.loads(json_str)
-        if "holdings_analysis" not in result:
-             if isinstance(result, list): result = {"holdings_analysis": result}
+        if "stocks_analysis" not in result:
+             if isinstance(result, list): result = {"stocks_analysis": result}
         
         return result
 
     except Exception as e:
         print(f"AI Error: {e}")
-        return {"holdings_analysis": [], "market_opportunities": []}
+        return {"stocks_analysis": [], "market_opportunities": []}
