@@ -397,7 +397,6 @@ def screen_stocks_local(strategy_name):
             # 计算指标用于选股
             df = calculate_indicators(df)
             curr = df.iloc[-1]
-            prev = df.iloc[-2]
             
             # 过滤3：停牌过滤
             if curr['vol'] <= 0: continue 
@@ -407,34 +406,32 @@ def screen_stocks_local(strategy_name):
             
             # --- 策略：一夜持股 (修正后的量价共振逻辑) ---
             if strategy_name == "overnight":
-                pct_chg = (curr['close'] - prev['close']) / prev['close'] * 100
                 vol_ratio = curr['vol'] / (df['vol'].rolling(5).mean().iloc[-2] + 1) # 对比5日均量
                 
                 # 逻辑：涨幅在3%-8%之间，放量1.5倍以上，收盘价站上MA5且处于上升趋势
-                if 3 < pct_chg < 8 and vol_ratio > 1.8:
+                if 3 < curr['pct_chg'] < 8 and vol_ratio > 1.8:
                     if curr['close'] > curr['MA5'] and curr['DIF'] > 0:
                         score = 80 + min(vol_ratio * 2, 15) # 量比越大权重越高，最高加15分
                         reason = f"量比{vol_ratio:.1f} 趋势向上"
             
             # --- 策略：打板策略 (修正后的强势股逻辑) ---
             elif strategy_name == "limit_up":
-                pct_chg = (curr['close'] - prev['close']) / prev['close'] * 100
                 # A股主板涨停一般 > 9.9%，创业板 > 19.9%
-                if (symbol.startswith('60') or symbol.startswith('00')) and pct_chg > 9.8:
+                if (symbol.startswith('60') or symbol.startswith('00')) and curr['pct_chg'] > 9.8:
                     score = 95
                     reason = "主板涨停"
-                elif (symbol.startswith('30') or symbol.startswith('68')) and pct_chg > 19.8:
+                elif (symbol.startswith('30') or symbol.startswith('68')) and curr['pct_chg'] > 19.8:
                     score = 98
                     reason = "双创涨停"
 
             if score > 0:
                 results.append({
-                    'symbol': symbol,
-                    'name': name,
+                    'symbol': symbol, # 股票代码
+                    'name': name, # 股票名称
                     'score': round(score, 1),
                     'reason': reason,
-                    'close': curr['close'],
-                    'pct_chg': round((curr['close']-prev['close'])/prev['close']*100, 2)
+                    'close': curr['close'], # 最新收盘价
+                    'pct_chg': curr['pct_chg'] # 涨跌幅
                 })
         except Exception as e:
             # print(f"解析 {symbol} 失败: {e}")

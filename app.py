@@ -323,7 +323,7 @@ elif page == "📂 数据仓库 & 选股":
     if strategy:
         with st.spinner("正在筛选本地数据..."):
             results = data_manager.screen_stocks_local(strategy)
-            if results:
+            if results & len(results) > 0:
                 st.write(f"筛选出 {len(results)} 只股票:")
                 df_res = pd.DataFrame(results)
                 st.dataframe(
@@ -331,6 +331,11 @@ elif page == "📂 数据仓库 & 选股":
                     column_config={"score": st.column_config.ProgressColumn("推荐度", min_value=0, max_value=100)},
                     width="stretch" # 🚨 修复: 替换 use_container_width
                 )
+                
+                if st.button("生成查询prompt"):
+                    system_prompt, user_prompt = ai_engine.generate_batch_recommand_prompt(results)
+                    st.info("正在生成 Prompt 预览...")
+                    st.text_area("生成的 Prompt 内容", system_prompt + user_prompt, height=400)
             else:
                 st.info("本地数据中未筛选到符合条件的股票，请先确保已下载历史数据。")
 

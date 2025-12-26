@@ -2,6 +2,38 @@ import openai
 import json, re
 import data_manager
 
+def call_ai(system_prompt, user_prompt):
+    """
+    构建 Prompt 并调用 AI
+    """
+    settings = data_manager.load_settings()
+    api_key = settings.get("api_key")
+    base_url = settings.get("base_url")
+    model_name = settings.get("model_name")
+    
+    if not api_key: raise ValueError("未配置 API Key")
+    client = openai.OpenAI(api_key=api_key, base_url=base_url)
+
+    response = client.chat.completions.create(
+        model=model_name,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ],
+        temperature=0.3,
+        response_format={"type": "json_object"}
+    )
+    
+    raw_text = response.choices[0].message.content
+    
+    # 3. 解析
+    json_match = re.search(r'\{.*\}', raw_text.strip(), re.DOTALL)
+    json_str = json_match.group(0) if json_match else raw_text.strip()
+    json_str = json_str.replace("'", '"')
+    
+    result = json.loads(json_str)
+    return result
+
 def generate_batch_prompt(portfolio_summary, stocks_data):
     """
     仅生成 Prompt 字符串，用于调试或发送
@@ -137,47 +169,65 @@ def generate_batch_prompt(portfolio_summary, stocks_data):
     """
     return "你是一名A股顶级基金经理。请只输出JSON。", user_prompt
 
-def get_batch_decision(portfolio_summary, stocks_data):
-    """
-    构建 Prompt 并调用 AI
-    """
-    settings = data_manager.load_settings()
-    api_key = settings.get("api_key")
-    base_url = settings.get("base_url")
-    model_name = settings.get("model_name")
-    
-    if not api_key: raise ValueError("未配置 API Key")
+def generate_batch_recommand_prompt(stocks_data):
+    stocks_data_jsons = json.dumps(stocks_data, ensure_ascii=False, indent=2)
+    user_prompt = f"""
+    根据用户提供的股票数据，遍历每一只股票，对股票进行多维度的深度分析，判断其投资价值，制定短期和长期的交易策略，并计算推荐评分。
 
-    client = openai.OpenAI(api_key=api_key, base_url=base_url)
-    
-    # 1. 生成 Prompt
+    【股票数据】
+    {stocks_data_jsons}
+
+    【任务要求】
+    请按照以下逻辑进行思考（不要在输出中展示思考过程，仅输出最终JSON）：
+    1. **基本面分析 (Fundamentals):** 评估估值水平 (PE/PB)、行业地位、护城河及盈利能力。
+    2. **技术面分析 (Technicals):** 必须关注提供的参数， `close` （当前价格）、 `pct_chg` （涨跌幅），并另外查询获取目前均线位置、成交量及指标状态，判断当前是处于吸筹、拉升、派发还是下跌阶段。
+    * *注意：如果数据中缺乏具体技术指标，请尽可能从公司财报、财经新闻、财经论坛、财经博客、财经网站、财经APP等获取。*
+    3. **消息面/情绪面 (Sentiment):** 结合提供的近期消息，从公司财报、财经新闻、财经论坛、财经博客、财经网站、财经APP等多方消息源查找相关信息，判断市场情绪是贪婪还是恐慌。
+    4. **价格区间** 提供的价格区间必须基于当前价格（Current Price）进行合理的支撑位（Support）和阻力位（Resistance）推算。
+
+    # 推荐度逻辑 (Rating 0-100)
+    * **80-100:** 强烈推荐。基本面优秀且技术面出现极佳买点（如缩量回调到位、突破关键阻力）。
+    * **60-79:** 谨慎推荐。基本面良好，但技术面需要等待回调或进一步确认。
+    * **40-59:** 观望/中性。趋势不明朗，或估值合理但缺乏催化剂。
+    * **0-39:** 不推荐/卖出。基本面恶化或技术面破位下跌。
+
+    【输出格式】
+    必须是合法的 JSON 对象，不包含 Markdown 格式：
+    {{
+        "stocks_analysis": [
+            "symbol": "股票代码",
+            "name": "股票名称",
+            "score": "推荐度（0-100）",
+            "short_term_strategy": {{
+                "action": "建议操作: BUY（买入）/HOLD（观望）",
+                "price": "短期适合买入的价格区间（字符串）"
+                "target_price": "短期止盈目标价（字符串）",
+                "reason": "短期策略理由"
+            }},
+            "long_term_strategy": {{
+                "action": "建议操作: BUY（买入）/HOLD（观望）",
+                "price": "理想的长线建仓价格区间（字符串）",
+                "target_price": "长线预期止盈目标价格区间（字符串）",
+                "reason": "长期策略理由"
+            }},
+            "analysis_summary": {{
+                "fundamental_view": "基本面评价",
+                "technical_view": "技术面评价",
+                "overall_reasoning": "综合分析理由"
+            }},
+        ]
+    }}
+    """
+    return "你是一位拥有20年A股实战经验的资深基金经理，擅长“基本面选股+技术面择时”的策略。你精通波浪理论、量价关系以及企业财报分析。同时，你是一个严格的数据分析机器人，输出结果必须严格遵循JSON格式。", user_prompt
+
+
+def get_batch_decision(portfolio_summary, stocks_data):
     system_prompt, user_prompt = generate_batch_prompt(portfolio_summary, stocks_data)
-    
-    # 2. 调用 API
     try:
-        response = client.chat.completions.create(
-            model=model_name,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            temperature=0.3,
-            response_format={"type": "json_object"}
-        )
-        
-        raw_text = response.choices[0].message.content
-        
-        # 3. 解析
-        json_match = re.search(r'\{.*\}', raw_text.strip(), re.DOTALL)
-        json_str = json_match.group(0) if json_match else raw_text.strip()
-        json_str = json_str.replace("'", '"')
-        
-        result = json.loads(json_str)
+        result = call_ai(system_prompt, user_prompt)
         if "stocks_analysis" not in result:
              if isinstance(result, list): result = {"stocks_analysis": result}
-        
         return result
-
     except Exception as e:
         print(f"AI Error: {e}")
         return {"stocks_analysis": [], "market_opportunities": []}
