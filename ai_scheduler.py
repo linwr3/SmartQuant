@@ -3,7 +3,8 @@ import os
 import sys
 import time
 import data_manager
-from datetime import datetime
+import threading
+from datetime import datetime, time as dtime
 from apscheduler.schedulers.blocking import BlockingScheduler
 from plyer import notification 
 
@@ -15,9 +16,83 @@ except ImportError as e:
     print(f"模块导入错误: {e}")
     sys.exit(1)
 
+def is_market_open():
+    """
+    判断当前是否为 A 股交易时间
+    交易时间: 周一到周五 09:30-11:30, 13:00-15:00
+    注意：此处未排除法定节假日，仅做基础时间判断
+    """
+    now = datetime.now()
+    
+    # 1. 排除周末 (0-4 是周一到周五, 5-6 是周末)
+    if now.weekday() > 4:
+        return False
+    
+    current_time = now.time()
+    
+    # 2. 定义时间段
+    morning_start = dtime(9, 30)
+    morning_end = dtime(11, 30)
+    afternoon_start = dtime(13, 0)
+    afternoon_end = dtime(15, 0)
+    
+    # 3. 判断是否在区间内
+    is_morning = morning_start <= current_time <= morning_end
+    is_break = morning_end < current_time < afternoon_start
+    is_afternoon = afternoon_start <= current_time <= afternoon_end
+    
+    return is_morning or is_afternoon, is_break
+
 def send_notification(title, message):
     try: notification.notify(title=title, message=message, app_name='SmartQuant Pro AI')
     except: pass
+
+class SchedulerUpdateHistoryContext:
+    """用于管理调度器跨任务状态的上下文类"""
+    def __init__(self):
+        curr_is_market_open, curr_is_market_break = is_market_open()
+        self.was_market_open = curr_is_market_open or curr_is_market_break
+        self.update_pending = False # 是否有待执行的更新任务
+        self.update_thread = None   # 存储更新线程句柄
+
+    def trigger_history_update(self):
+        """启动更新线程，包含容错和并发控制"""
+        
+        # 1. 并发控制：如果已经在更新中，直接跳过，等待下次调度检查
+        if self.update_thread is not None and self.update_thread.is_alive():
+            print(">>> [Scheduler] 历史数据更新正在进行中，跳过本次触发...")
+            return
+
+        print(">>> [Scheduler] 触发历史数据更新任务...")
+        
+        # 定义线程任务函数
+        def update_task():
+            try:
+                # 调用 data_manager 的更新接口
+                result_msg = data_manager.update_today_data_tushare()
+                
+                # 简单判断是否成功 (根据 data_manager 的返回字符串)
+                if "完成" in result_msg:
+                    print(f">>> [Scheduler] 更新成功: {result_msg}")
+                    self.update_pending = False # ✅ 成功，取消挂起状态
+                    send_notification("AI 数据仓库", f"每日数据更新成功\n{result_msg}")
+                elif "今日无数据" in result_msg:
+                    print(f">>> [Scheduler] 更新异常: {result_msg}")
+                    self.update_pending = False # ✅ 成功，取消挂起状态
+                else:
+                    print(f">>> [Scheduler] 更新返回异常: {result_msg}")
+                    self.update_pending = True  # ❌ 失败，保持挂起，下次重试
+            except Exception as e:
+                print(f">>> [Scheduler] 更新过程出错: {e}")
+                self.update_pending = True      # ❌ 异常，保持挂起，下次重试
+
+        # 启动线程
+        self.update_thread = threading.Thread(target=update_task, name="HistoryUpdateThread")
+        self.update_thread.start()
+
+# 实例化全局上下文
+scheduler_update_history_ctx = SchedulerUpdateHistoryContext()
+
 
 LOG_DIR = "logs"
 def write_signal_log(message):
@@ -25,7 +100,7 @@ def write_signal_log(message):
     with open(os.path.join(LOG_DIR, f"ai_signals_{today}.txt"), 'a', encoding='utf-8') as f:
         f.write(f"{message}\n")
 
-def gen_ai_executer_info():
+def gen_holding_stocks_info():
     config = data_manager.load_ai_config()
     strategy = config.get('strategy', 'Dynamic-Market-Adjusted')
     
@@ -79,8 +154,8 @@ def gen_ai_executer_info():
     }
     return summary, stocks_data_list
 
-def execute_ai_decision():
-    summary, stocks_data_list = gen_ai_executer_info()
+def analysising_stocks_job():
+    summary, stocks_data_list = gen_holding_stocks_info()
     if not stocks_data_list: return
 
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -109,13 +184,30 @@ def execute_ai_decision():
     except Exception as e:
         print(f"执行失败: {e}")
 
+def execute_auto_scheduler():
+    global scheduler_update_history_ctx
+    curr_is_market_open, curr_is_market_break = is_market_open()
+    if curr_is_market_open:
+        analysising_stocks_job()
+        scheduler_update_history_ctx.was_market_open = True
+        scheduler_update_history_ctx.update_pending = False # 强制结束，防止历史数据更新任务一直挂起
+    elif curr_is_market_break:
+        scheduler_update_history_ctx.was_market_open = True
+        scheduler_update_history_ctx.update_pending = False # 强制结束，防止历史数据更新任务一直挂起
+    else:
+        if scheduler_update_history_ctx.was_market_open or scheduler_update_history_ctx.update_pending:
+            if scheduler_update_history_ctx.was_market_open:
+                scheduler_update_history_ctx.was_market_open = False
+                scheduler_update_history_ctx.update_pending = True
+            scheduler_update_history_ctx.trigger_history_update()
+
 def start_scheduler():
     config = data_manager.load_ai_config()
     period = config.get('period_minutes', 30)
     scheduler = BlockingScheduler()
-    scheduler.add_job(execute_ai_decision, 'interval', minutes=period, start_date=datetime.now())
+    scheduler.add_job(execute_auto_scheduler, 'interval', minutes=period, start_date=datetime.now())
     print(f"调度器启动，周期 {period} 分钟")
-    execute_ai_decision()
+    execute_auto_scheduler()
     try: scheduler.start()
     except: pass
 
