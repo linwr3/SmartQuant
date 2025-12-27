@@ -4,6 +4,7 @@ import sys
 import time
 import data_manager
 import threading
+import wxpusher
 from datetime import datetime, time as dtime
 from apscheduler.schedulers.blocking import BlockingScheduler
 from plyer import notification 
@@ -26,7 +27,7 @@ def is_market_open():
     
     # 1. 排除周末 (0-4 是周一到周五, 5-6 是周末)
     if now.weekday() > 4:
-        return False
+        return False, False
     
     current_time = now.time()
     
@@ -54,6 +55,8 @@ class SchedulerUpdateHistoryContext:
         self.was_market_open = curr_is_market_open or curr_is_market_break
         self.update_pending = False # 是否有待执行的更新任务
         self.update_thread = None   # 存储更新线程句柄
+        self.scan_pending = False # 是否有待执行的扫描任务
+        self.scan_thread = None # 扫描数据线程句柄
 
     def trigger_history_update(self):
         """启动更新线程，包含容错和并发控制"""
@@ -62,9 +65,10 @@ class SchedulerUpdateHistoryContext:
         if self.update_thread is not None and self.update_thread.is_alive():
             print(">>> [Scheduler] 历史数据更新正在进行中，跳过本次触发...")
             return
+        if self.scan_thread is not None and self.scan_thread.is_alive():
+            print(">>> [Scheduler] 扫描数据正在进行中，跳过本次触发...")
+            return
 
-        print(">>> [Scheduler] 触发历史数据更新任务...")
-        
         # 定义线程任务函数
         def update_task():
             try:
@@ -76,19 +80,46 @@ class SchedulerUpdateHistoryContext:
                     print(f">>> [Scheduler] 更新成功: {result_msg}")
                     self.update_pending = False # ✅ 成功，取消挂起状态
                     send_notification("AI 数据仓库", f"每日数据更新成功\n{result_msg}")
+                    wxpusher.send_wechat_msg("每日数据更新成功", result_msg)
+
+                    self.scan_pending = True
+                    self.scan_thread = threading.Thread(target=scan_task, name="ScanStocksThread")
+                    self.scan_thread.start()
                 elif "今日无数据" in result_msg:
                     print(f">>> [Scheduler] 更新异常: {result_msg}")
                     self.update_pending = False # ✅ 成功，取消挂起状态
+                    wxpusher.send_wechat_msg("每日数据更新异常，停止更新", result_msg)
                 else:
                     print(f">>> [Scheduler] 更新返回异常: {result_msg}")
                     self.update_pending = True  # ❌ 失败，保持挂起，下次重试
+                    wxpusher.send_wechat_msg("每日数据更新失败", result_msg)
             except Exception as e:
                 print(f">>> [Scheduler] 更新过程出错: {e}")
                 self.update_pending = True      # ❌ 异常，保持挂起，下次重试
+                wxpusher.send_wechat_msg("每日数据更新过程出错", e)
+        def scan_task():
+            try:
+                strategy = "overnight"
+                # strategy = "limit_up"
+                results = data_manager.screen_stocks_local(strategy)
+                if len(results) > 0:
+                    print(f">>> [Scheduler] 筛选出 {len(results)} 只股票")
+                    wxpusher.send_wechat_msg(f"策略{strategy}扫描结果", str(results))
+                else:
+                    print(f">>> [Scheduler] 没有符合条件的股票")
+                    wxpusher.send_wechat_msg(f"策略{strategy}扫描结果", "没有符合条件的股票")
+                self.scan_pending = False
+            except Exception as e:
+                print(f">>> [Scheduler] 扫描数据过程出错: {e}")
+                self.scan_pending = True      # ❌ 异常，保持挂起，下次重试
+        
+        if self.update_pending:
+            self.update_thread = threading.Thread(target=update_task, name="HistoryUpdateThread")
+            self.update_thread.start()
+        elif self.scan_pending:
+            self.scan_thread = threading.Thread(target=scan_task, name="ScanStocksThread")
+            self.scan_thread.start()
 
-        # 启动线程
-        self.update_thread = threading.Thread(target=update_task, name="HistoryUpdateThread")
-        self.update_thread.start()
 
 # 实例化全局上下文
 scheduler_update_history_ctx = SchedulerUpdateHistoryContext()
@@ -158,12 +189,12 @@ def analysising_stocks_job():
     summary, stocks_data_list = gen_holding_stocks_info()
     if not stocks_data_list: return
 
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
     try:
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         print(f"{timestamp}: 正在调用 AI...")
         res = ai_engine.get_batch_decision(summary, stocks_data_list)
         
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         output_info = ""
         for d in res.get("stocks_analysis", []):
             act = d.get("action")
@@ -178,6 +209,7 @@ def analysising_stocks_job():
             output_info += f"{timestamp}: {msg}\n"
             print(f"{timestamp}: {msg}")
         if len(output_info) > 0: 
+            wxpusher.send_wechat_msg(f"AI 信号: {timestamp}", output_info)
             write_signal_log(f"{output_info}\n")
         print(f"{timestamp}: AI 决策完成!")
                 
@@ -187,15 +219,18 @@ def analysising_stocks_job():
 def execute_auto_scheduler():
     global scheduler_update_history_ctx
     curr_is_market_open, curr_is_market_break = is_market_open()
+    
     if curr_is_market_open:
         analysising_stocks_job()
         scheduler_update_history_ctx.was_market_open = True
         scheduler_update_history_ctx.update_pending = False # 强制结束，防止历史数据更新任务一直挂起
+        scheduler_update_history_ctx.scan_pending = False
     elif curr_is_market_break:
         scheduler_update_history_ctx.was_market_open = True
         scheduler_update_history_ctx.update_pending = False # 强制结束，防止历史数据更新任务一直挂起
+        scheduler_update_history_ctx.scan_pending = False
     else:
-        if scheduler_update_history_ctx.was_market_open or scheduler_update_history_ctx.update_pending:
+        if scheduler_update_history_ctx.was_market_open or scheduler_update_history_ctx.update_pending or scheduler_update_history_ctx.scan_pending:
             if scheduler_update_history_ctx.was_market_open:
                 scheduler_update_history_ctx.was_market_open = False
                 scheduler_update_history_ctx.update_pending = True

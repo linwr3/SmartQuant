@@ -323,7 +323,7 @@ elif page == "📂 数据仓库 & 选股":
     if strategy:
         with st.spinner("正在筛选本地数据..."):
             results = data_manager.screen_stocks_local(strategy)
-            if results & len(results) > 0:
+            if len(results) > 0:
                 st.write(f"筛选出 {len(results)} 只股票:")
                 df_res = pd.DataFrame(results)
                 st.dataframe(
@@ -331,7 +331,7 @@ elif page == "📂 数据仓库 & 选股":
                     column_config={"score": st.column_config.ProgressColumn("推荐度", min_value=0, max_value=100)},
                     width="stretch" # 🚨 修复: 替换 use_container_width
                 )
-                
+
                 if st.button("生成查询prompt"):
                     system_prompt, user_prompt = ai_engine.generate_batch_recommand_prompt(results)
                     st.info("正在生成 Prompt 预览...")
@@ -374,7 +374,17 @@ elif page == "⚙️ 系统设置":
             type="password",
             help="用于历史数据下载，建议配置多个以避免限频"
         )
-        
+        st.subheader("WxPusher配置")
+        wxpusher_token = st.text_input(
+            "WxPusher AppToken", 
+            value=current_settings.get("wxpusher_token", ""), 
+            type="password"
+        )
+        st.subheader("WxPusher uids")
+        wxpusher_uids = st.text_input(
+            "WxPusher 推送的uid配置，用逗号间隔", 
+            value=current_settings.get("wxpusher_uids", "")
+        )
         if st.form_submit_button("保存全部设置"):
             new_settings = current_settings.copy()
             new_settings.update({
@@ -382,7 +392,9 @@ elif page == "⚙️ 系统设置":
                 "api_key": new_api_key,
                 "model_name": new_model_name,
                 "base_url": p_info['base_url'],
-                "tushare_tokens": ts_tokens
+                "tushare_tokens": ts_tokens,
+                "wxpusher_token":wxpusher_token,
+                "wxpusher_uids":wxpusher_uids,
             })
             data_manager.save_settings(new_settings)
             st.success("配置已保存")

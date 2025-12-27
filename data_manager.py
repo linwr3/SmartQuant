@@ -64,7 +64,9 @@ def load_settings():
             "api_key": "",
             "model_name": "deepseek-chat",
             "base_url": "https://api.deepseek.com",
-            "market_data_source": "sina"
+            "market_data_source": "sina",
+            "wxpusher_token": "",
+            "wxpusher_uids": "",
         }
     with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
         return json.load(f)
