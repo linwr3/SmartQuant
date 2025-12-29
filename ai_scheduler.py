@@ -17,6 +17,8 @@ except ImportError as e:
     print(f"模块导入错误: {e}")
     sys.exit(1)
 
+UPDATE_TRY_TIME = 3
+
 def is_market_open():
     """
     判断当前是否为 A 股交易时间
@@ -55,6 +57,7 @@ class SchedulerUpdateHistoryContext:
         self.was_market_open = curr_is_market_open or curr_is_market_break
         self.update_pending = False # 是否有待执行的更新任务
         self.update_thread = None   # 存储更新线程句柄
+        self.update_try_time = 0 # 更新尝试次数
         self.scan_pending = False # 是否有待执行的扫描任务
         self.scan_thread = None # 扫描数据线程句柄
 
@@ -87,8 +90,13 @@ class SchedulerUpdateHistoryContext:
                     self.scan_thread.start()
                 elif "今日无数据" in result_msg:
                     print(f">>> [Scheduler] 更新异常: {result_msg}")
-                    self.update_pending = False # ✅ 成功，取消挂起状态
-                    wxpusher.send_wechat_msg("每日数据更新异常，停止更新", result_msg)
+                    self.update_try_time = self.update_try_time + 1
+                    if self.update_try_time >= UPDATE_TRY_TIME:
+                        self.update_pending = False # ✅ 成功，取消挂起状态
+                        wxpusher.send_wechat_msg("每日数据更新异常，停止更新", result_msg)
+                    else:
+                        self.update_pending = True  # ❌ 失败，保持挂起，下次重试
+                        wxpusher.send_wechat_msg(f"每日数据更新异常，稍后重试({self.update_try_time}/{UPDATE_TRY_TIME})", result_msg)
                 else:
                     print(f">>> [Scheduler] 更新返回异常: {result_msg}")
                     self.update_pending = True  # ❌ 失败，保持挂起，下次重试
@@ -99,16 +107,34 @@ class SchedulerUpdateHistoryContext:
                 wxpusher.send_wechat_msg("每日数据更新过程出错", e)
         def scan_task():
             try:
-                strategy = "overnight"
-                # strategy = "limit_up"
-                results = data_manager.screen_stocks_local(strategy)
-                if len(results) > 0:
-                    print(f">>> [Scheduler] 筛选出 {len(results)} 只股票")
-                    wxpusher.send_wechat_msg(f"策略{strategy}扫描结果", str(results))
-                else:
-                    print(f">>> [Scheduler] 没有符合条件的股票")
-                    wxpusher.send_wechat_msg(f"策略{strategy}扫描结果", "没有符合条件的股票")
+                data = portfolio.load_portfolio()
+                holdings = data.get('holdings', [])
+                buy_date_str =  datetime.now().date().strftime("%Y-%m-%d")
+
+                append_followed_cnt = 0
+                append_followed_data = []
+
+                strategys = ["overnight", "limit_up"]
+                for strategy in strategys:
+                    results = data_manager.screen_stocks_local(strategy)
+                    for h in results[:10]: # 取前10只
+                        symbol = h.get('symbol')
+                        existing = next((h for h in holdings if h['symbol'] == symbol), None)
+                        if not existing:
+                            name = data_manager.get_stock_name(symbol)
+                            portfolio.upsert_holding(symbol, name, 0, 0, 0, buy_date_str)
+                            append_followed_cnt += 1
+                            append_followed_data.append(h)
+
+                    # if len(results) > 0:
+                    #     print(f">>> [Scheduler] 筛选出 {len(results)} 只股票")
+                    #     wxpusher.send_wechat_msg(f"策略{strategy}扫描结果", str(results))
+                    # else:
+                    #     print(f">>> [Scheduler] 没有符合条件的股票")
+                    #     wxpusher.send_wechat_msg(f"策略{strategy}扫描结果", "没有符合条件的股票")
                 self.scan_pending = False
+                print(f">>> [Scheduler] 筛选结束 新增关注股票 {append_followed_cnt}只")
+                wxpusher.send_wechat_msg(f"收盘数据扫描结束", f"新增关注股票{append_followed_cnt}只:\n{str(append_followed_data)}")
             except Exception as e:
                 print(f">>> [Scheduler] 扫描数据过程出错: {e}")
                 self.scan_pending = True      # ❌ 异常，保持挂起，下次重试
@@ -203,6 +229,13 @@ def analysising_stocks_job():
                 send_notification(f"AI 信号: {act} {d.get('symbol')}", msg)
                 output_info += f"{timestamp}: {msg}\n"
                 print(f"{timestamp}: {msg}")
+                if act in ["SELL", "REDUCE", "CLEAR"]:
+                    if any(h.get('symbol') == d.get('symbol') and float(h.get('shares')) == 0 for h in stocks_data_list):
+                        portfolio.delete_holding(d.get('symbol'))
+                        msg = f"{timestamp}: 从关注中移除 {d.get('symbol')}"
+                        send_notification(msg)
+                        output_info += f"{timestamp}: {msg}\n"
+                        print(f"{timestamp}: {msg}")
         for d in res.get("market_opportunities", []):
             msg = f"【推荐({d.get('recommendation',0)})】{d.get('name', '')}({d.get('symbol')}) 价格区间：{d.get('price')}；操作股数：{d.get('quantity',0)}\n{d.get('reason')}"
             send_notification(f"AI 信号: 推荐 {d.get('symbol')}", msg)
@@ -225,15 +258,18 @@ def execute_auto_scheduler():
         scheduler_update_history_ctx.was_market_open = True
         scheduler_update_history_ctx.update_pending = False # 强制结束，防止历史数据更新任务一直挂起
         scheduler_update_history_ctx.scan_pending = False
+        scheduler_update_history_ctx.update_try_time = 0
     elif curr_is_market_break:
         scheduler_update_history_ctx.was_market_open = True
         scheduler_update_history_ctx.update_pending = False # 强制结束，防止历史数据更新任务一直挂起
         scheduler_update_history_ctx.scan_pending = False
+        scheduler_update_history_ctx.update_try_time = 0
     else:
         if scheduler_update_history_ctx.was_market_open or scheduler_update_history_ctx.update_pending or scheduler_update_history_ctx.scan_pending:
             if scheduler_update_history_ctx.was_market_open:
                 scheduler_update_history_ctx.was_market_open = False
                 scheduler_update_history_ctx.update_pending = True
+                scheduler_update_history_ctx.update_try_time = 0
             scheduler_update_history_ctx.trigger_history_update()
 
 def start_scheduler():
