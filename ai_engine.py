@@ -27,11 +27,17 @@ def call_ai(system_prompt, user_prompt):
     raw_text = response.choices[0].message.content
     
     # 3. 解析
-    json_match = re.search(r'\{.*\}', raw_text.strip(), re.DOTALL)
-    json_str = json_match.group(0) if json_match else raw_text.strip()
-    json_str = json_str.replace("'", '"')
-    
-    result = json.loads(json_str)
+    try:
+        json_match = re.search(r'\{.*\}', raw_text.strip(), re.DOTALL)
+        json_str = json_match.group(0) if json_match else raw_text.strip()
+        json_str = json_str.replace("'", '"')
+        
+        result = json.loads(json_str)
+    except Exception as e:
+        print(f"[ai_engine.py] call_ai ERROR! JSON 解析错误, raw_content:{raw_text}")
+        print(f"convert json str: {json_str}")
+        print(f"错误信息: {e}")
+        result = {}
     return result
 
 def generate_batch_prompt(portfolio_summary, stocks_data):
@@ -46,6 +52,7 @@ def generate_batch_prompt(portfolio_summary, stocks_data):
         strategy_desc = (
             "【激进策略】\n"
             "- 目标: 追求短期爆发，捕捉龙头妖股。\n"
+            "- 仓位把控: 严格控制长线仓位和短线仓位平衡，长线股票仓位占比30%，短线股票仓位占比70%。\n"
             "- 风控: 单票上限40%。\n"
             "- **止损**: 亏损超过 -8% 坚决止损。\n"
             "- **止盈**: 盈利超过 +20% 后若出现技术面走弱(如MACD死叉)则分批止盈。"
@@ -55,6 +62,7 @@ def generate_batch_prompt(portfolio_summary, stocks_data):
         strategy_desc = (
             "【稳健策略】\n"
             "- 目标: 保本增值，偏好低估值蓝筹和高股息。\n"
+            "- 仓位把控: 严格控制长线仓位和短线仓位平衡，长线股票仓位占比60%，短线股票仓位占比40%。\n"
             "- 风控: 单票上限15%。\n"
             "- **止损**: 亏损超过 -5% 立即止损，严禁扛单。\n"
             "- **止盈**: 盈利 +10% 左右即可考虑逐步落袋，不贪婪。"
@@ -64,6 +72,7 @@ def generate_batch_prompt(portfolio_summary, stocks_data):
         strategy_desc = (
             "【动态均衡策略】\n"
             "- 目标: 兼顾成长与风控，跟随市场热点轮动。\n"
+            "- 仓位把控: 严格控制长线仓位和短线仓位平衡，市场总体上涨时，长线股票仓位占比30%，短线股票仓位占比70%；市场总体下跌时，长线股票仓位占比80%，短线股票仓位占比20%；市场横盘时，长线股票仓位占比60%，短线股票仓位占比40%。\n"
             "- 风控: 单票上限30%。\n"
             "- **止损**: 亏损 -6% 至 -8% 区间触发止损。\n"
             "- **止盈**: 结合技术指标，若RSI超买(>80)或高位放量滞涨，建议止盈。"
@@ -73,7 +82,7 @@ def generate_batch_prompt(portfolio_summary, stocks_data):
     enriched_stocks = []
     followed_stocks = []
     for s in stocks_data:
-        if s.get('shares', 0) == 0:
+        if s.get('total_shares', 0) == 0:
             followed_stocks.append({
                 'symbol': s.get('symbol'),
                 'name': s.get('name'),
@@ -81,7 +90,7 @@ def generate_batch_prompt(portfolio_summary, stocks_data):
                 'indicators': s.get('indicators'),
             })
         else:
-            cost = s.get('cost_price', 0.0)
+            cost = s.get('cost', 0.0)
             curr = s.get('current_price', 0.0)
             pnl_pct = 0.0
             if cost > 0:
@@ -114,7 +123,7 @@ def generate_batch_prompt(portfolio_summary, stocks_data):
 
     【任务要求】
     1. **持仓诊断(核心)**: 必须遍历上述【当前持仓数据】每一只股票。
-       - 计算其当前**仓位占比**。必须关注 `pnl_ratio` (盈亏率) 、 `cost_price` (成本价)、`avail_shares` (**当前可交易股数**)、`shares`(持有总股数)。
+       - 计算其当前**仓位占比**。必须关注 `pnl_ratio` (盈亏率) 、 `cost` (成本价)、`avail_shares` (**当前可交易股数**)、`total_shares`(持有总股数)。
        - 结合 JSON 中的 `indicators` (MACD, RSI, MA5) 判断趋势。MACD_Cross=1 为金叉(买入/持有信号)，-1 为死叉(卖出/减仓信号)。
        - 结合现在股票实时的 `MACDFS` 、 `分时量` 指标判断短期趋势。
        - 如果当前仓位超过 {max_pos_limit}%，且盈利或反转趋势不明显，必须建议减仓 (REDUCE)。
@@ -125,6 +134,8 @@ def generate_batch_prompt(portfolio_summary, stocks_data):
        - 对于 BUY/SELL 操作，请给出建议的 **价格区间 (price_range)** (例如: "20.50-20.80")和**目前股价**。
        - 分析结果输出到stocks_analysis。
        - 必须严格关注股票当前仓位占比，建议买入必须严格根据现价和可用金额计算买入股数，以及买入后所占仓位和总仓位是否合理。
+       - 分析股票属于长线持有还是短线持有，并给出理由。分析目标止盈价格区间（target_price)。
+       - 判断所有持仓中，长短线仓位是否符合策略要求，如果长短线仓位不符合策略要求，从持仓中超预算的股票中选出可能收益最低的换到对应股票中可能收益最高的。
 
     2. **关注股票诊断(核心)**：必须遍历上述【已跟踪但未持仓的股票】每一只股票。
        - 必须关注 `current_price` (目前股价) 。
@@ -137,7 +148,7 @@ def generate_batch_prompt(portfolio_summary, stocks_data):
     
     3. **机会发现 (Market Opportunities)**: 
        - 基于你对中国股市板块轮动和近期（截止你训练数据知识库）的热门方向（如科技、新能源、中特估等），结合当前策略。
-       - 如果上述持仓中有表现不佳的股票，请建议是否应该更换。
+       - 如果上述持仓中有表现不佳的股票，或者长短线持仓不符合策略要求，请建议是否应该更换。
        - 必须关注账户`可用现金`是否足够买入新股，买入后仓位占比是否合理。
        - 推荐 3-5 个你认为值得关注的比目前持仓更有盈利机会的潜力股票或具体概念（请提供具体的板块名称、具体代码和选股逻辑）。
        - *注意*: 如果没有足够信心，可以返回空列表。
@@ -150,6 +161,7 @@ def generate_batch_prompt(portfolio_summary, stocks_data):
             {{
                 "symbol": "股票代码",
                 "name": "股票名称",
+                "risk": "风险级别（长线持有/短线持有/持有不动）",
                 "action": "BUY/SELL/HOLD/REDUCE/CLEAR",
                 "quantity": 建议交易股数 (100的整数倍),
                 "price_range": "建议买卖价格区间 (字符串)",
@@ -161,7 +173,9 @@ def generate_batch_prompt(portfolio_summary, stocks_data):
             {{
                 "symbol": "建议关注的代码或板块名",
                 "name": "名称",
+                "risk": "风险级别（长线持有/短线持有/持有不动）",
                 "price": "建议买入价格区间 (字符串)",
+                "target_price": "预估止盈价格区间（字符串）",
                 "quantity": 建议买入股数 (100的整数倍),
                 "recommendation": 推荐度（1-100）,
                 "reason": "推荐理由及潜在的买入逻辑"

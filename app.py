@@ -44,14 +44,15 @@ def populate_form(row):
     st.session_state.edit_avail_shares = row['avail_shares']
     st.session_state.edit_cost = row['cost']
     st.session_state.edit_buy_date_str = row['locked_date']
+    st.rerun()
 
-def on_symbol_change():
-    """代码输入框回调：自动查询名称"""
-    s = st.session_state.edit_symbol
-    if s:
-        n = data_manager.get_stock_name(s)
-        if not st.session_state.edit_name or "失败" in st.session_state.edit_name:
-            st.session_state.edit_name = n if n else "查询失败"
+# def on_symbol_change():
+#     """代码输入框回调：自动查询名称"""
+#     s = st.session_state.edit_symbol
+#     if s:
+#         n = data_manager.get_stock_name(s)
+#         if not st.session_state.edit_name or "失败" in st.session_state.edit_name:
+#             st.session_state.edit_name = n if n else "查询失败"
 
 # 初始化数据目录
 if not os.path.exists(data_manager.DATA_DIR):
@@ -68,39 +69,44 @@ def is_scheduler_running():
         try:
             pid = int(f.read().strip())
         except ValueError:
-            os.remove(PID_FILE)
+            if os.path.exists(PID_FILE):
+                os.remove(PID_FILE)
             return False
     try:
         os.kill(pid, 0)
         return True
     except OSError:
-        os.remove(PID_FILE)
+        if os.path.exists(PID_FILE):
+            os.remove(PID_FILE)
         return False
 
 def start_ai_scheduler():
-    if is_scheduler_running():
-        st.error("AI 决策任务已在后台运行中。")
-        return
-    
-    SCHEDULER_LOG = "logs/ai_scheduler_error.log"
-    if not os.path.exists("logs"): os.makedirs("logs")
+    if ai_scheduler.TEST_SWITCH:
+        ai_scheduler.start_scheduler()
+    else:
+        if is_scheduler_running():
+            st.error("AI 决策任务已在后台运行中。")
+            return
+        
+        SCHEDULER_LOG = "logs/ai_scheduler_error.log"
+        if not os.path.exists("logs"): os.makedirs("logs")
 
-    with open(SCHEDULER_LOG, 'w') as f:
-        f.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Attempting to start ai_scheduler...\n")
+        with open(SCHEDULER_LOG, 'w') as f:
+            f.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Attempting to start ai_scheduler...\n")
 
-    try:
-        process = subprocess.Popen(
-            [sys.executable, "ai_scheduler.py"], 
-            creationflags=subprocess.CREATE_NEW_CONSOLE, 
-            close_fds=True
-        )
-        with open(PID_FILE, 'w') as f:
-            f.write(str(process.pid))
-        st.success(f"AI 决策任务启动成功！PID: {process.pid}")
-        time.sleep(1) 
-        st.rerun()
-    except Exception as e:
-        st.error(f"启动失败: {e}")
+        try:
+            process = subprocess.Popen(
+                [sys.executable, "ai_scheduler.py"], 
+                creationflags=subprocess.CREATE_NEW_CONSOLE, 
+                close_fds=True
+            )
+            with open(PID_FILE, 'w') as f:
+                f.write(str(process.pid))
+            st.success(f"AI 决策任务启动成功！PID: {process.pid}")
+            time.sleep(1) 
+            st.rerun()
+        except Exception as e:
+            st.error(f"启动失败: {e}")
 
 def stop_ai_scheduler():
     if not os.path.exists(PID_FILE): return
@@ -112,11 +118,13 @@ def stop_ai_scheduler():
     try:
         os.kill(pid, signal.SIGTERM)
         time.sleep(1)
-        os.remove(PID_FILE)
+        if os.path.exists(PID_FILE):
+            os.remove(PID_FILE)
         st.success("AI 任务已终止。")
         st.rerun()
     except OSError:
-        os.remove(PID_FILE)
+        if os.path.exists(PID_FILE):
+            os.remove(PID_FILE)
 
 # --- 1. 市场全景 ---
 if page == "📊 市场全景":
@@ -224,7 +232,7 @@ elif page == "🤖 智能决策 & 机会":
     if col_btn3.button("🐞 调试 Prompt (不消耗Token)", type="secondary"):
         st.info("正在生成 Prompt 预览...")
         data_manager.save_ai_config(selected_strategy, selected_period)
-        portfolio_summary, mock_stocks = ai_scheduler.gen_ai_executer_info()
+        portfolio_summary, mock_stocks = ai_scheduler.gen_holding_stocks_info()
         if not mock_stocks:
             pass
         
@@ -448,14 +456,14 @@ elif page == "💰 资产管理 (T+1)":
             "avail_shares": h['avail_shares'],
             "cost": h['cost'], 
             "price": price,
-            "market_value": round(mv, 2),
-            "profit": round(mv - total_cost, 2),
+            "market_value": round(mv,3),
+            "profit": round(mv - total_cost, 3),
             "locked_date": latest_buy_date, 
             "total_cost": total_cost 
         })
         
-    with col2: st.metric("持仓市值", f"¥{market_val:,.2f}")
-    with col3: st.metric("账户总资产", f"¥{(new_cash + market_val):,.2f}")
+    with col2: st.metric("持仓市值", f"¥{market_val:,.3f}")
+    with col3: st.metric("账户总资产", f"¥{(new_cash + market_val):,.3f}")
 
     st.divider()
 
@@ -463,66 +471,49 @@ elif page == "💰 资产管理 (T+1)":
     st.subheader("持仓列表 (点击行进行修改/删除)")
     if df_data:
         df = pd.DataFrame(df_data)
-        event = st.dataframe(
-            df, 
-            column_config={
-                "symbol": "代码", "name": "名称", 
-                "total_shares": "持有股数", "avail_shares": "可用股数(T+1)",
-                "cost": "平均成本", "price": "现价",
-                "market_value": "市值", "profit": "浮动盈亏",
-                "latest_buy_date": "最近买入日"
-            },
-            width="stretch",
-            height="auto",
-            on_select="rerun", 
-            selection_mode="single-row"
-        )
-        
-        if len(event.selection.rows) > 0:
-            idx = event.selection.rows[0]
-            selected_row = df.iloc[idx]
-            if st.session_state.edit_symbol != selected_row['symbol']:
-                populate_form(selected_row)
+        with st.form("upsert_form"):
+            st.dataframe(df, 
+                column_config={
+                    "symbol": "代码", 
+                    "name": "名称", 
+                    "total_shares": "持有股数", 
+                    "avail_shares": "可用股数(T+1)",
+                    "cost": "平均成本", 
+                    "price": "现价",
+                    "market_value": "市值", 
+                    "profit": "浮动盈亏",
+                    "latest_buy_date": "最近买入日"
+                }
+            )
+            st.divider()
+
+            symbol_in = st.text_input("代码", key="edit_symbol")
+            c3, c4, c5, c6 = st.columns(4)
+            shares_in = c3.number_input("最新总持有股数", min_value=0, step=100, key="edit_shares")
+            avail_shares_in = c4.number_input("最新可用股数 (T+1)", min_value=0, step=100, key="edit_avail_shares")
+            cost_in = c5.number_input("最新平均成本", min_value=0.0, step=0.1, key="edit_cost")
+            buy_date_input = c6.date_input("买入日期 (锁定 T+1)", value=datetime.now().date(), max_value=datetime.now().date()) 
+            
+            b1, b2, b3 = st.columns([1, 1, 4])
+            submit = b1.form_submit_button("💾 保存/新增/修改", type="primary")
+            delete = b2.form_submit_button("🗑️ 删除此股 (清仓)", type="secondary")
+            
+            if submit:
+                final_symbol = st.session_state.get('edit_symbol', '')
+                final_name = st.session_state.get('edit_name', '')
+                if not final_name or "失败" in final_name:
+                    final_name = data_manager.get_stock_name(final_symbol)
+                portfolio.upsert_holding(final_symbol, final_name, shares_in, avail_shares_in, cost_in, buy_date_input.strftime("%Y-%m-%d"))
+                st.session_state['clear_form_after_submit'] = True
+                st.success(f"{final_symbol} 保存成功")
+                st.rerun()
+                
+            if delete:
+                final_symbol = st.session_state.get('edit_symbol', '')
+                if final_symbol:
+                    portfolio.delete_holding(final_symbol)
+                    st.session_state['clear_form_after_submit'] = True
+                    st.warning(f"{final_symbol} 已删除")
+                    st.rerun()
     else:
         st.info("空仓状态，请在下方添加持仓")
-
-    st.divider()
-
-    # 3. 底部：增删改查表单
-    st.subheader("交易录入 / 持仓修正")
-    col_ext1, col_ext2 = st.columns(2)
-    
-    symbol_in = col_ext1.text_input("代码", key="edit_symbol", on_change=on_symbol_change)
-    name_in = col_ext2.text_input("名称 (留空自动查)", key="edit_name")
-    
-    st.markdown("---") 
-    
-    with st.form("upsert_form"):
-        st.caption(f"当前操作：**{st.session_state.get('edit_symbol', '新股票')}** - **{st.session_state.get('edit_name', '请输入代码')}**")
-        c3, c4, c5, c6 = st.columns(4)
-        shares_in = c3.number_input("最新总持有股数", min_value=0, step=100, key="edit_shares")
-        avail_shares_in = c4.number_input("最新可用股数 (T+1)", min_value=0, step=100, key="edit_avail_shares")
-        cost_in = c5.number_input("最新平均成本", min_value=0.0, step=0.1, key="edit_cost")
-        buy_date_input = c6.date_input("买入日期 (锁定 T+1)", value=datetime.now().date(), max_value=datetime.now().date()) 
-        
-        b1, b2, b3 = st.columns([1, 1, 4])
-        submit = b1.form_submit_button("💾 保存/新增/修改", type="primary")
-        delete = b2.form_submit_button("🗑️ 删除此股 (清仓)", type="secondary")
-        
-        if submit:
-            final_symbol = st.session_state.get('edit_symbol', '')
-            final_name = st.session_state.get('edit_name', '')
-            if not final_name or "失败" in final_name:
-                 final_name = data_manager.get_stock_name(final_symbol)
-            portfolio.upsert_holding(final_symbol, final_name, shares_in, avail_shares_in, cost_in, buy_date_input.strftime("%Y-%m-%d"))
-            st.session_state['clear_form_after_submit'] = True
-            st.success(f"{final_symbol} 保存成功")
-            st.rerun()
-            
-        if delete:
-            final_symbol = st.session_state.get('edit_symbol', '')
-            if final_symbol:
-                portfolio.delete_holding(final_symbol)
-                st.session_state['clear_form_after_submit'] = True
-                st.warning(f"{final_symbol} 已删除")
-                st.rerun()

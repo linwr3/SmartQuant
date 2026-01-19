@@ -25,11 +25,12 @@ def load_portfolio():
         for h in data.get('holdings', []):
             
             # --- 数据兼容与初始化 ---
-            if 'total_shares' not in h: h['total_shares'] = h.get('shares', 0)
+            if 'total_shares' not in h: h['total_shares'] = 0
             if 'locked_shares' not in h: h['locked_shares'] = 0
             if 'locked_date' not in h: h['locked_date'] = "2000-01-01"
             if 'cost' not in h: h['cost'] = 0.0 # 确保成本字段存在
-            
+            if 'clear_flag' not in h: h['clear_flag'] = 0  # 清除关注标记，如果多次决定不清除才移除关注
+
             # --- T+1 刷新逻辑 (使用 locked_shares) ---
             avail_shares = h['total_shares']
             
@@ -67,7 +68,26 @@ def update_cash(amount):
     data['cash'] = float(amount)
     save_portfolio(data)
 
-def upsert_holding(symbol, name, total_shares, avail_shares, cost, buy_date_str):
+def add_clear_flag(symbol):
+    data = load_portfolio()
+    holdings = data['holdings']
+    existing = next((h for h in holdings if h['symbol'] == symbol), None)
+    if existing:
+        existing['clear_flag'] += 1
+        save_portfolio(data)
+        return existing['clear_flag']
+    else:
+        return 0
+
+def reset_clear_flag(symbol):
+    data = load_portfolio()
+    holdings = data['holdings']
+    existing = next((h for h in holdings if h['symbol'] == symbol), None)
+    if existing:
+        existing['clear_flag'] = 0
+        save_portfolio(data)
+
+def upsert_holding(symbol, name, total_shares, avail_shares, cost, locked_date):
     """
     新增或更新持仓 (库存校准模式)
     """
@@ -91,15 +111,11 @@ def upsert_holding(symbol, name, total_shares, avail_shares, cost, buy_date_str)
         existing['name'] = name
         existing['total_shares'] = int(total_shares)
         existing['cost'] = float(cost)
-        existing['locked_date'] = buy_date_str
-        # 锁定股数和日期
-        if locked_qty > 0:
-            existing['locked_shares'] = locked_qty
-            
-        else:
-            # 如果锁定股数 <= 0，则全部可用
-            existing['locked_shares'] = 0 
-            
+        existing['locked_date'] = locked_date
+        existing['locked_shares'] = max(locked_qty, 0)
+        existing['avail_shares'] = int(avail_shares)
+        if existing['total_shares'] > 0:
+            existing['clear_flag'] = 0
     else:
         # 新增逻辑
         new_item = {
@@ -108,7 +124,8 @@ def upsert_holding(symbol, name, total_shares, avail_shares, cost, buy_date_str)
             "total_shares": int(total_shares),
             "cost": float(cost),
             "locked_shares": max(0, locked_qty),
-            "locked_date": buy_date_str,
+            "locked_date": locked_date,
+            "clear_flag": 0,
             "avail_shares": int(avail_shares) # 仅用于初始化，下次加载时会被重算
         }
         holdings.append(new_item)

@@ -17,7 +17,10 @@ except ImportError as e:
     print(f"模块导入错误: {e}")
     sys.exit(1)
 
-UPDATE_TRY_TIME = 3
+UPDATE_TRY_TIME = 10
+CLEAR_LIMIT = 2
+
+TEST_SWITCH = False
 
 def is_market_open():
     """
@@ -82,7 +85,7 @@ class SchedulerUpdateHistoryContext:
                 if "完成" in result_msg:
                     print(f">>> [Scheduler] 更新成功: {result_msg}")
                     self.update_pending = False # ✅ 成功，取消挂起状态
-                    send_notification("AI 数据仓库", f"每日数据更新成功\n{result_msg}")
+                    # send_notification("AI 数据仓库", f"每日数据更新成功\n{result_msg}")
                     wxpusher.send_wechat_msg("每日数据更新成功", result_msg)
 
                     self.scan_pending = True
@@ -125,13 +128,6 @@ class SchedulerUpdateHistoryContext:
                             portfolio.upsert_holding(symbol, name, 0, 0, 0, buy_date_str)
                             append_followed_cnt += 1
                             append_followed_data.append(h)
-
-                    # if len(results) > 0:
-                    #     print(f">>> [Scheduler] 筛选出 {len(results)} 只股票")
-                    #     wxpusher.send_wechat_msg(f"策略{strategy}扫描结果", str(results))
-                    # else:
-                    #     print(f">>> [Scheduler] 没有符合条件的股票")
-                    #     wxpusher.send_wechat_msg(f"策略{strategy}扫描结果", "没有符合条件的股票")
                 self.scan_pending = False
                 print(f">>> [Scheduler] 筛选结束 新增关注股票 {append_followed_cnt}只")
                 wxpusher.send_wechat_msg(f"收盘数据扫描结束", f"新增关注股票{append_followed_cnt}只:\n{str(append_followed_data)}")
@@ -191,11 +187,12 @@ def gen_holding_stocks_info():
             stocks_data_list.append({
                 "symbol": symbol,
                 "name": rt.get('name', h['name']),
-                "current_price": price,
-                "cost_price": h['cost'],
-                "shares": h['total_shares'],
-                "market_value": val,
+                "total_shares": h['total_shares'],
+                "cost": h['cost'],
                 "avail_shares": h['total_shares'] - h['locked_shares'],
+
+                "current_price": price,
+                "market_value": val,
                 "indicators": {
                     "MA5": float(last.get('close', 0)),
                     "RSI": float(last.get('RSI', 0)),
@@ -222,28 +219,66 @@ def analysising_stocks_job():
         
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         output_info = ""
-        for d in res.get("stocks_analysis", []):
+
+        sorted_analysis_list = sorted(res.get("stocks_analysis", []), key=lambda x:x.get('quantity',0), reverse=True)
+        for d in sorted_analysis_list:
             act = d.get("action")
-            if act in ["BUY", "SELL", "REDUCE", "CLEAR"]:
-                msg = f"【{act}】{d.get('name', '')}({d.get('symbol')}) 价格区间：{d.get('price_range','')}；操作股数：{d.get('quantity',0)}\n{d.get('reason')}"
-                send_notification(f"AI 信号: {act} {d.get('symbol')}", msg)
-                output_info += f"{timestamp}: {msg}\n"
-                print(f"{timestamp}: {msg}")
-                if act in ["SELL", "REDUCE", "CLEAR"]:
-                    if any(h.get('symbol') == d.get('symbol') and float(h.get('shares')) == 0 for h in stocks_data_list):
+            symbol = d.get('symbol')
+            name = d.get('name', '')
+            risk = d.get('risk', '')
+            price_range = d.get('price_range', '')
+            quantity = d.get('quantity', 0)
+            reason = d.get('reason', '')
+            msg = f'''
+            **********
+            【{act}】{name}({symbol})
+            风险提示：{risk}
+            价格区间：{price_range}
+            操作股数：{quantity}
+            理由：{reason}
+            **********
+
+'''
+            output_info += msg
+
+            if any(symbol == h.get('symbol') for h in stocks_data_list):
+                h = next(h for h in stocks_data_list if h.get('symbol') == symbol)
+            else:
+                continue
+            if act in ["SELL", "REDUCE", "CLEAR"]:
+                if float(h.get('total_shares')) == 0:
+                    if portfolio.add_clear_flag(symbol) >= CLEAR_LIMIT:
                         portfolio.delete_holding(d.get('symbol'))
-                        msg = f"{timestamp}: 从关注中移除 {d.get('symbol')}"
-                        send_notification(msg)
-                        output_info += f"{timestamp}: {msg}\n"
-                        print(f"{timestamp}: {msg}")
+                        msg = f"***从关注中移除 {d.get('symbol')}\n"
+                        output_info += msg
+            elif act in ["BUY", "HOLD"]:
+                if float(h.get('total_shares')) == 0:
+                    portfolio.reset_clear_flag(symbol)
         for d in res.get("market_opportunities", []):
-            msg = f"【推荐({d.get('recommendation',0)})】{d.get('name', '')}({d.get('symbol')}) 价格区间：{d.get('price')}；操作股数：{d.get('quantity',0)}\n{d.get('reason')}"
-            send_notification(f"AI 信号: 推荐 {d.get('symbol')}", msg)
+            recommendation = d.get('recommendation', 0)
+            name = d.get('name', '')
+            symbol = d.get('symbol')
+            risk = d.get('risk', '')
+            price_range = d.get('price', '')
+            target_price_range = d.get('target_price', '')
+            quantity = d.get('quantity', 0)
+            reason = d.get('reason', '')
+
+            msg = f'''
+            **********
+            【推荐({recommendation})】{name}({symbol})
+            风险提示：{risk}
+            建议买入价格区间：{price_range}
+            预估止盈价格区间：{target_price_range}
+            操作股数：{quantity}
+            理由：{reason}
+            **********
+
+            '''
             output_info += f"{timestamp}: {msg}\n"
-            print(f"{timestamp}: {msg}")
         if len(output_info) > 0: 
             wxpusher.send_wechat_msg(f"AI 信号: {timestamp}", output_info)
-            write_signal_log(f"{output_info}\n")
+            write_signal_log(f"{timestamp}AI决策结果：\n{output_info}\n")
         print(f"{timestamp}: AI 决策完成!")
                 
     except Exception as e:
@@ -265,22 +300,26 @@ def execute_auto_scheduler():
         scheduler_update_history_ctx.scan_pending = False
         scheduler_update_history_ctx.update_try_time = 0
     else:
-        if scheduler_update_history_ctx.was_market_open or scheduler_update_history_ctx.update_pending or scheduler_update_history_ctx.scan_pending:
-            if scheduler_update_history_ctx.was_market_open:
-                scheduler_update_history_ctx.was_market_open = False
-                scheduler_update_history_ctx.update_pending = True
-                scheduler_update_history_ctx.update_try_time = 0
-            scheduler_update_history_ctx.trigger_history_update()
+        if datetime.now().hour >= 16: # 延迟到下午4点后再更新数据，因为TuShare在3点多大概率更新不到
+            if scheduler_update_history_ctx.was_market_open or scheduler_update_history_ctx.update_pending or scheduler_update_history_ctx.scan_pending:
+                if scheduler_update_history_ctx.was_market_open:
+                    scheduler_update_history_ctx.was_market_open = False
+                    scheduler_update_history_ctx.update_pending = True
+                    scheduler_update_history_ctx.update_try_time = 0
+                scheduler_update_history_ctx.trigger_history_update()
 
 def start_scheduler():
     config = data_manager.load_ai_config()
     period = config.get('period_minutes', 30)
-    scheduler = BlockingScheduler()
-    scheduler.add_job(execute_auto_scheduler, 'interval', minutes=period, start_date=datetime.now())
-    print(f"调度器启动，周期 {period} 分钟")
-    execute_auto_scheduler()
-    try: scheduler.start()
-    except: pass
+    if TEST_SWITCH:
+        analysising_stocks_job()
+    else:
+        scheduler = BlockingScheduler()
+        scheduler.add_job(execute_auto_scheduler, 'interval', minutes=period, start_date=datetime.now())
+        print(f"调度器启动，周期 {period} 分钟")
+        execute_auto_scheduler()
+        try: scheduler.start()
+        except: pass
 
 if __name__ == '__main__':
     start_scheduler()
