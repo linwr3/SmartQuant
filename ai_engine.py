@@ -185,6 +185,62 @@ def generate_batch_prompt(portfolio_summary, stocks_data):
     """
     return "你是一名A股顶级基金经理。请只输出JSON。", user_prompt
 
+def generate_daily_recommand_stock_prompt():
+    user_prompt = f"""
+    # Role
+    你是一名拥有20年经验的中国A股市场资深分析师，擅长“消息面驱动”与“主力资金行为分析”。你精通通过政策风向、行业突发事件及全球宏观动态来预判未来3-5个交易日的主力资金流向。
+
+    # Objective
+    请利用联网搜索功能，抓取中国股市（A股）最新的重磅消息（过去24-48小时内），分析并筛选出接下来3-5天内主力资金最可能流入的**1-2个核心板块**，并从这些板块中挑选出**最可能受青睐的个股**（龙头或高弹性标的）。
+
+    # Workflow
+    请严格按照以下步骤进行搜索和分析：
+
+    ## Step 1: 消息面扫描与板块锁定
+    1.  **搜索源**：重点扫描 财联社（电报）、东方财富网（特别是资金流向）、证券时报、由上层发布的最新政策文件、以及期货市场的大宗商品价格剧烈波动。
+    2.  **筛选标准**：
+        * **政策驱动**：是否有国家级或部委级的突发利好政策（如“十四五”规划更新、行业刺激计划）？
+        * **事件驱动**：是否有突发的地缘政治、科技突破（如AI新模型、半导体突破）或涨价缺货逻辑？
+        * **资金验证**：结合搜索到的“北向资金”或“主力净流入”数据，确认哪个板块已有异动迹象。
+    3.  **产出**：确定1-2个热点板块。
+
+    ## Step 2: 个股深度筛选
+    在锁定的板块中，寻找符合以下特征的股票：
+    1.  **辨识度（龙头属性）**：该板块的市场公认龙头或近期的人气妖股。
+    2.  **消息共振**：该个股是否有特定的个股利好（如业绩预增、中标大单、资产重组传闻）与板块利好共振。
+    3.  **主力痕迹**：搜索该股近期的“龙虎榜”数据或大宗交易记录，看是否有机构席位或知名游资介入。
+    4.  **排除板块**：需要排除创业板和科创板的股票。
+
+    ## Step 3: 价格区间预判
+    基于该股的近期技术形态（支撑位/压力位）及市场情绪热度，**逻辑推演**其未来3-5天的潜在目标价区间（非财务预测，而是基于筹码博弈的预判）。
+
+    # Output Format
+    请**仅**以标准的 JSON 格式返回结果，不要包含 markdown 代码块标记（```json ... ```）以外的多余废话。JSON 结构如下：
+
+    ```json
+    {{
+        "stocks_analysis": [
+            {{
+                "symbol": "股票代码",
+                "name": "股票名称",
+                "sector": "所属板块",
+                "current_price": "当前收盘价(float)",
+                "price_range": "预期止盈价格区间 (e.g., 25.50 - 28.00)",
+                "news_events": [
+                {{
+                    "content": "简要描述新闻内容",
+                    "source_url": "新闻链接或来源媒体名称"
+                }}
+                ],
+                "reason": "深度分析：为什么主力会选它？（结合政策级别、资金流向、个股地位进行阐述）",
+                "risk": "主要风险点 (e.g., 高位获利盘回吐、监管函风险)",
+                "recommend": "推荐指数"(1-5)
+            }}
+        ]
+    }}
+    """
+    return "你是一名拥有20年经验的中国A股市场资深分析师，擅长“消息面驱动”与“主力资金行为分析”。你精通通过政策风向、行业突发事件及全球宏观动态来预判未来3-5个交易日的主力资金流向。", user_prompt
+
 def generate_batch_recommand_prompt(stocks_data):
     stocks_data_jsons = json.dumps(stocks_data, ensure_ascii=False, indent=2)
     user_prompt = f"""
@@ -235,15 +291,3 @@ def generate_batch_recommand_prompt(stocks_data):
     }}
     """
     return "你是一位拥有20年A股实战经验的资深基金经理，擅长“基本面选股+技术面择时”的策略。你精通波浪理论、量价关系以及企业财报分析。同时，你是一个严格的数据分析机器人，输出结果必须严格遵循JSON格式。", user_prompt
-
-
-def get_batch_decision(portfolio_summary, stocks_data):
-    system_prompt, user_prompt = generate_batch_prompt(portfolio_summary, stocks_data)
-    try:
-        result = call_ai(system_prompt, user_prompt)
-        if "stocks_analysis" not in result:
-             if isinstance(result, list): result = {"stocks_analysis": result}
-        return result
-    except Exception as e:
-        print(f"AI Error: {e}")
-        return {"stocks_analysis": [], "market_opportunities": []}

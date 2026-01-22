@@ -63,6 +63,7 @@ class SchedulerUpdateHistoryContext:
         self.update_try_time = 0 # 更新尝试次数
         self.scan_pending = False # 是否有待执行的扫描任务
         self.scan_thread = None # 扫描数据线程句柄
+        self.analysis_time = -1 # 每日收盘后分析次数
 
     def trigger_history_update(self):
         """启动更新线程，包含容错和并发控制"""
@@ -124,10 +125,12 @@ class SchedulerUpdateHistoryContext:
                         symbol = h.get('symbol')
                         existing = next((h for h in holdings if h['symbol'] == symbol), None)
                         if not existing:
-                            name = data_manager.get_stock_name(symbol)
-                            portfolio.upsert_holding(symbol, name, 0, 0, 0, buy_date_str)
-                            append_followed_cnt += 1
-                            append_followed_data.append(h)
+                            price = data_manager.get_realtime_quote(h['symbol'])['price']
+                            if price > 0 :
+                                name = data_manager.get_stock_name(symbol)
+                                portfolio.upsert_holding(symbol, name, 0, 0, 0, buy_date_str)
+                                append_followed_cnt += 1
+                                append_followed_data.append(h)
                 self.scan_pending = False
                 print(f">>> [Scheduler] 筛选结束 新增关注股票 {append_followed_cnt}只")
                 wxpusher.send_wechat_msg(f"收盘数据扫描结束", f"新增关注股票{append_followed_cnt}只:\n{str(append_followed_data)}")
@@ -215,7 +218,16 @@ def analysising_stocks_job():
     try:
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         print(f"{timestamp}: 正在调用 AI...")
-        res = ai_engine.get_batch_decision(summary, stocks_data_list)
+
+        res = {"stocks_analysis": [], "market_opportunities": []}
+        system_prompt, user_prompt = ai_engine.generate_batch_prompt(summary, stocks_data_list)
+        try:
+            result = ai_engine.call_ai(system_prompt, user_prompt)
+            if "stocks_analysis" not in result:
+                if isinstance(result, list): result = {"stocks_analysis": result}
+            res = result
+        except Exception as e:
+            print(f"AI Error: {e}")
         
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         output_info = ""
@@ -284,6 +296,63 @@ def analysising_stocks_job():
     except Exception as e:
         print(f"执行失败: {e}")
 
+def analysis_stock_market_after_close():
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"{timestamp}: 收盘后消息面分析...")
+    try:
+        res = None
+        system_prompt, user_prompt = ai_engine.generate_daily_recommand_stock_prompt()
+        try:
+            result = ai_engine.call_ai(system_prompt, user_prompt)
+            if "stocks_analysis" not in result:
+                if isinstance(result, list): result = {"stocks_analysis": result}
+            res = result
+        except Exception as e:
+            print(f"AI Error: {e}")
+        
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        buy_date_str =  datetime.now().date().strftime("%Y-%m-%d")
+
+        output_info = ""
+        sorted_analysis_list = res.get("stocks_analysis", [])
+        for d in sorted_analysis_list:
+            symbol = d.get('symbol')
+            name = d.get('name', '')
+            sector = d.get('sector', '')
+            real_price = data_manager.get_realtime_quote(symbol)['price']
+            price = d.get('current_price', 0)
+            price_range = d.get('price_range', '')
+            new_events = d.get('news_events', [])
+            reason = d.get('reason', '')
+            risk = d.get('risk', '')
+
+            news_msg = "\n"
+            for e in new_events:
+                news_msg += f"【{e.get('source_url', '')}】\n{e.get('content', '')}"
+
+            msg = f'''
+            **********
+            {name}({symbol})
+            所属板块：{sector}
+            当前价格：{price}
+            查询价格: {real_price}
+            预期止盈价格区间：{price_range}
+            消息源：{news_msg}
+            理由：{reason}
+            风险提示：{risk}
+            **********
+
+'''
+            output_info += msg
+            if real_price > 0 :
+                portfolio.upsert_holding(symbol, name, 0, 0, 0, buy_date_str)
+        if len(output_info) > 0: 
+            wxpusher.send_wechat_msg(f"当日行情分析: {timestamp}", output_info)
+            write_signal_log(f"{timestamp}当日行情分析：\n{output_info}\n")
+        print(f"{timestamp}: 当日行情分析完成!")
+    except Exception as e:
+        print(f"执行失败: {e}")
+
 def execute_auto_scheduler():
     global scheduler_update_history_ctx
     curr_is_market_open, curr_is_market_break = is_market_open()
@@ -294,11 +363,13 @@ def execute_auto_scheduler():
         scheduler_update_history_ctx.update_pending = False # 强制结束，防止历史数据更新任务一直挂起
         scheduler_update_history_ctx.scan_pending = False
         scheduler_update_history_ctx.update_try_time = 0
+        scheduler_update_history_ctx.analysis_time = -1
     elif curr_is_market_break:
         scheduler_update_history_ctx.was_market_open = True
         scheduler_update_history_ctx.update_pending = False # 强制结束，防止历史数据更新任务一直挂起
         scheduler_update_history_ctx.scan_pending = False
         scheduler_update_history_ctx.update_try_time = 0
+        scheduler_update_history_ctx.analysis_time = -1
     else:
         if datetime.now().hour >= 16: # 延迟到下午4点后再更新数据，因为TuShare在3点多大概率更新不到
             if scheduler_update_history_ctx.was_market_open or scheduler_update_history_ctx.update_pending or scheduler_update_history_ctx.scan_pending:
@@ -307,6 +378,12 @@ def execute_auto_scheduler():
                     scheduler_update_history_ctx.update_pending = True
                     scheduler_update_history_ctx.update_try_time = 0
                 scheduler_update_history_ctx.trigger_history_update()
+        if datetime.now().hour >= 20: # 每天晚上8点后再分析
+            if scheduler_update_history_ctx.analysis_time < 0:
+                scheduler_update_history_ctx.analysis_time = 5
+            if scheduler_update_history_ctx.analysis_time > 0:
+                scheduler_update_history_ctx.analysis_time = scheduler_update_history_ctx.analysis_time - 1
+                
 
 def start_scheduler():
     config = data_manager.load_ai_config()

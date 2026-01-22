@@ -232,7 +232,7 @@ elif page == "🤖 智能决策 & 机会":
     
     current_holdings = portfolio.load_portfolio().get('holdings', [])
     
-    col_btn1, col_btn2, col_btn3 = st.columns(3)
+    col_btn1, col_btn2, col_btn3, col_btn4 = st.columns(4)
     
     if col_btn1.button("🚀 启动 AI 调度", disabled=running, type="primary"):
         data_manager.save_ai_config(selected_strategy, selected_period)
@@ -251,6 +251,8 @@ elif page == "🤖 智能决策 & 机会":
         
         system_prompt, user_prompt = ai_engine.generate_batch_prompt(portfolio_summary, mock_stocks)
         st.text_area("生成的 Prompt 内容", system_prompt + user_prompt, height=400)
+    if col_btn4.button('功能分块测试按钮', type="secondary"):
+        ai_scheduler.analysis_stock_market_after_close()
 
 # --- 3. 数据仓库管理 (含后台线程) ---
 elif page == "📂 数据仓库 & 选股":
