@@ -18,7 +18,7 @@ except ImportError as e:
     sys.exit(1)
 
 UPDATE_TRY_TIME = 10
-CLEAR_LIMIT = 2
+CLEAR_LIMIT = 1
 
 TEST_SWITCH = False
 

@@ -44,15 +44,28 @@ def populate_form(row):
     st.session_state.edit_avail_shares = row['avail_shares']
     st.session_state.edit_cost = row['cost']
     st.session_state.edit_buy_date_str = row['locked_date']
-    st.rerun()
+    # st.rerun()
+def clear_form():
+    """清空表单"""
+    st.session_state.edit_name = ""
+    st.session_state.edit_shares = 0 
+    st.session_state.edit_avail_shares = 0 
+    st.session_state.edit_cost = 0.0
+    st.session_state.edit_buy_date_str = datetime.now().strftime("%Y-%m-%d")
 
-# def on_symbol_change():
-#     """代码输入框回调：自动查询名称"""
-#     s = st.session_state.edit_symbol
-#     if s:
-#         n = data_manager.get_stock_name(s)
-#         if not st.session_state.edit_name or "失败" in st.session_state.edit_name:
-#             st.session_state.edit_name = n if n else "查询失败"
+def on_symbol_change():
+    """代码输入框回调：自动查询名称"""
+    symbol = st.session_state.edit_symbol
+    if symbol:
+        holdings = portfolio.load_portfolio().get('holdings', [])
+        existing = next((h for h in holdings if h['symbol'] == symbol), None)
+        if existing:
+            populate_form(existing)
+        else:
+            clear_form()
+            # n = data_manager.get_stock_name(symbol)
+            # if not st.session_state.edit_name or "失败" in st.session_state.edit_name:
+            #     st.session_state.edit_name = n if n else "查询失败"
 
 # 初始化数据目录
 if not os.path.exists(data_manager.DATA_DIR):
@@ -471,23 +484,22 @@ elif page == "💰 资产管理 (T+1)":
     st.subheader("持仓列表 (点击行进行修改/删除)")
     if df_data:
         df = pd.DataFrame(df_data)
+        st.dataframe(df, 
+            column_config={
+                "symbol": "代码", 
+                "name": "名称", 
+                "total_shares": "持有股数", 
+                "avail_shares": "可用股数(T+1)",
+                "cost": "平均成本", 
+                "price": "现价",
+                "market_value": "市值", 
+                "profit": "浮动盈亏",
+                "latest_buy_date": "最近买入日"
+            }
+        )
+        st.divider()
+        symbol_in = st.text_input("代码", key="edit_symbol", on_change=on_symbol_change)
         with st.form("upsert_form"):
-            st.dataframe(df, 
-                column_config={
-                    "symbol": "代码", 
-                    "name": "名称", 
-                    "total_shares": "持有股数", 
-                    "avail_shares": "可用股数(T+1)",
-                    "cost": "平均成本", 
-                    "price": "现价",
-                    "market_value": "市值", 
-                    "profit": "浮动盈亏",
-                    "latest_buy_date": "最近买入日"
-                }
-            )
-            st.divider()
-
-            symbol_in = st.text_input("代码", key="edit_symbol")
             c3, c4, c5, c6 = st.columns(4)
             shares_in = c3.number_input("最新总持有股数", min_value=0, step=100, key="edit_shares")
             avail_shares_in = c4.number_input("最新可用股数 (T+1)", min_value=0, step=100, key="edit_avail_shares")
